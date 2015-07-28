@@ -15,7 +15,7 @@ LibRec
 * **Easy expansion:** LibRec provides a set of well-designed recommendation interfaces by which new algorithms can be easily implemented.
 
 ### Download
-* librec-v1.3 (coming soon, [what's new](CHANGES.md))
+* **[librec-v1.3](http://www.librec.net/release/librec-v1.3.zip)** (see [what's new](CHANGES.md))
 * **[librec-v1.2](http://www.librec.net/release/librec-v1.2.zip)**
 * **[librec-v1.1](http://www.librec.net/release/librec-v1.1.zip)**
 * **[librec-v1.0](http://www.librec.net/release/librec-v1.0.zip)**
@@ -23,7 +23,7 @@ LibRec
 ### Reference
 Please cite the following papers if LibRec is helpful to your research. 
 
-1. Guibing Guo, Jie Zhang, Zhu Sun and Neil Yorke-Smith, LibRec: A Java Library for Recommender Systems, in Proceedings of the 23rd Conference on User Modelling, Adaptation and Personalization (UMAP), 2015.
+1. Guibing Guo, Jie Zhang, Zhu Sun and Neil Yorke-Smith, [LibRec: A Java Library for Recommender Systems](http://ceur-ws.org/Vol-1388/demo_paper1.pdf), in Posters, Demos, Late-breaking Results and Workshop Proceedings of the 23rd Conference on User Modelling, Adaptation and Personalization (UMAP), 2015.
 
 ### Acknowledgement
 

@@ -29,10 +29,10 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
-
-import librec.main.LibRec;
 
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBasedTable;
@@ -57,11 +57,17 @@ public class DataDAO {
 	private String dataDir;
 	// path to data file
 	private String dataPath;
-	// store data as {user/item rate} matrix
+	// store rate data as {user, item, rate} matrix
 	private SparseMatrix rateMatrix;
+	// store time data as {user, item, timestamp} matrix
+	private SparseMatrix timeMatrix;
+	// store rate data as a sparse tensor
+	private SparseTensor rateTensor;
 
 	// is item type as user
 	private boolean isItemAsUser;
+	// is first head line
+	private boolean isHeadline = false;
 
 	// data scales
 	private List<Double> ratingScale;
@@ -76,9 +82,6 @@ public class DataDAO {
 
 	// inverse views of userIds, itemIds
 	private BiMap<Integer, String> idUsers, idItems;
-
-	// Table: {user, item, rating time}
-	private Table<Integer, Integer, Long> timestampTable;
 
 	// time unit may depend on data sets, e.g. in MovieLens, it is unix seconds
 	private TimeUnit timeUnit;
@@ -141,7 +144,7 @@ public class DataDAO {
 	 * 
 	 * @return a sparse matrix storing all the relevant data
 	 */
-	public SparseMatrix readData() throws Exception {
+	public SparseMatrix[] readData() throws Exception {
 		return readData(new int[] { 0, 1, 2 }, -1);
 	}
 
@@ -149,7 +152,7 @@ public class DataDAO {
 	 * @param isCCSUsed
 	 *            whether to construct CCS structures while reading data
 	 */
-	public SparseMatrix readData(double binThold) throws Exception {
+	public SparseMatrix[] readData(double binThold) throws Exception {
 		return readData(new int[] { 0, 1, 2 }, binThold);
 	}
 
@@ -158,23 +161,20 @@ public class DataDAO {
 	 * 
 	 * @param cols
 	 *            the indexes of the relevant columns in the data file: {user, item, [rating, timestamp] (optional)}
-	 * @param isCCSUsed
-	 *            whether to store the CCS structures of the rating matrix
 	 * @param binThold
 	 *            the threshold to binarize a rating. If a rating is greater than the threshold, the value will be 1;
 	 *            otherwise 0. To disable this feature, i.e., keep the original rating value, set the threshold a
 	 *            negative value
 	 * @return a sparse matrix storing all the relevant data
 	 */
-	public SparseMatrix readData(int[] cols, double binThold) throws Exception {
+	public SparseMatrix[] readData(int[] cols, double binThold) throws Exception {
 
-		if (LibRec.isMeasuresOnly)
-			Logs.debug(String.format("Dataset: %s", Strings.last(dataPath, 38)));
-		else
-			Logs.info(String.format("Dataset: %s", Strings.last(dataPath, 38)));
+		Logs.info(String.format("Dataset: %s", Strings.last(dataPath, 38)));
 
 		// Table {row-id, col-id, rate}
 		Table<Integer, Integer, Double> dataTable = HashBasedTable.create();
+		// Table {row-id, col-id, timestamp}
+		Table<Integer, Integer, Long> timeTable = null;
 		// Map {col-id, multiple row-id}: used to fast build a rating matrix
 		Multimap<Integer, Integer> colMap = HashMultimap.create();
 
@@ -183,7 +183,12 @@ public class DataDAO {
 		minTimestamp = Long.MAX_VALUE;
 		maxTimestamp = Long.MIN_VALUE;
 		while ((line = br.readLine()) != null) {
-			String[] data = line.split("[ \t,]");
+			if (isHeadline()) {
+				setHeadline(false);
+				continue;
+			}
+
+			String[] data = line.trim().split("[ \t,]+");
 
 			String user = data[cols[0]];
 			String item = data[cols[1]];
@@ -207,11 +212,17 @@ public class DataDAO {
 
 			// record rating's issuing time
 			if (cols.length >= 4 && data.length >= 4) {
-				if (timestampTable == null)
-					timestampTable = HashBasedTable.create();
+				if (timeTable == null)
+					timeTable = HashBasedTable.create();
 
 				// convert to million-seconds
-				long timestamp = timeUnit.toMillis(Long.parseLong(data[cols[3]]));
+				long mms = 0L;
+				try {
+					mms = Long.parseLong(data[cols[3]]); // cannot format "9.7323480e+008"
+				} catch (NumberFormatException e) {
+					mms = (long) Double.parseDouble(data[cols[3]]);
+				}
+				long timestamp = timeUnit.toMillis(mms);
 
 				if (minTimestamp > timestamp)
 					minTimestamp = timestamp;
@@ -219,7 +230,7 @@ public class DataDAO {
 				if (maxTimestamp < timestamp)
 					maxTimestamp = timestamp;
 
-				timestampTable.put(row, col, timestamp);
+				timeTable.put(row, col, timestamp);
 			}
 
 		}
@@ -240,7 +251,7 @@ public class DataDAO {
 				double val = ratingScale.get(i);
 				ratingScale.set(i, val + epsilon);
 			}
-			// udpate data table
+			// update data table
 			for (int row = 0; row < numRows; row++) {
 				for (int col = 0; col < numCols; col++) {
 					if (dataTable.contains(row, col))
@@ -260,10 +271,137 @@ public class DataDAO {
 		// build rating matrix
 		rateMatrix = new SparseMatrix(numRows, numCols, dataTable, colMap);
 
+		if (timeTable != null)
+			timeMatrix = new SparseMatrix(numRows, numCols, timeTable, colMap);
+
 		// release memory of data table
 		dataTable = null;
+		timeTable = null;
 
-		return rateMatrix;
+		return new SparseMatrix[] { rateMatrix, timeMatrix };
+	}
+
+	/**
+	 * Read data from the data file. Note that we didn't take care of the duplicated lines.
+	 * 
+	 * @param cols
+	 *            the indexes of the relevant columns in the data file: {user, item, rating}, other columns are treated
+	 *            as features
+	 * @param binThold
+	 *            the threshold to binarize a rating. If a rating is greater than the threshold, the value will be 1;
+	 *            otherwise 0. To disable this feature, i.e., keep the original rating value, set the threshold a
+	 *            negative value
+	 * @return a sparse tensor storing all the relevant data
+	 */
+	@SuppressWarnings("unchecked")
+	public SparseMatrix[] readTensor(int[] cols, double binThold) throws Exception {
+
+		if (cols.length < 3)
+			throw new Exception("Column length cannot be smaller than 3. Usage: user, item, rating columns.");
+
+		Logs.info(String.format("Dataset: %s", Strings.last(dataPath, 38)));
+
+		int[] dims = null;
+		int numDims = 0;
+		List<Integer>[] ndLists = null;
+		Set<Integer>[] ndSets = null;
+		List<Double> vals = new ArrayList<Double>();
+
+		BufferedReader br = FileIO.getReader(dataPath);
+		String line = null;
+		while ((line = br.readLine()) != null) {
+			if (isHeadline()) {
+				setHeadline(false);
+				continue;
+			}
+
+			String[] data = line.trim().split("[ \t,]+");
+
+			// initialization
+			if (dims == null) {
+				numDims = data.length - 1;
+				dims = new int[numDims];
+				ndLists = (List<Integer>[]) new List<?>[numDims];
+				ndSets = (Set<Integer>[]) new Set<?>[numDims];
+				for (int d = 0; d < numDims; d++) {
+					ndLists[d] = new ArrayList<Integer>();
+					ndSets[d] = new HashSet<Integer>();
+				}
+			}
+
+			// set data
+			for (int d = 0; d < data.length; d++) {
+				String val = data[d];
+				int feature = -1;
+
+				if (d == cols[0]) {
+					// user
+					feature = userIds.containsKey(val) ? userIds.get(val) : userIds.size();
+					userIds.put(val, feature);
+
+				} else if (d == cols[1]) {
+					// item
+					feature = itemIds.containsKey(val) ? itemIds.get(val) : itemIds.size();
+					itemIds.put(val, feature);
+
+				} else if (d == cols[2]) {
+					// rating
+					double rate = Double.parseDouble(val);
+
+					// binarize the rating for item recommendation task
+					if (binThold >= 0)
+						rate = rate > binThold ? 1.0 : 0.0;
+
+					vals.add(rate);
+					scaleDist.add(rate);
+
+					continue;
+				} else {
+					// other: val as feature value
+					feature = val.equalsIgnoreCase("na") ? 0 : Integer.parseInt(val);
+				}
+
+				int dim = d > cols[2] ? d - 1 : d;
+				ndLists[dim].add(feature);
+				ndSets[dim].add(feature);
+			}
+		}
+		br.close();
+
+		numRatings = scaleDist.size();
+		ratingScale = new ArrayList<>(scaleDist.elementSet());
+		Collections.sort(ratingScale);
+
+		// if min-rate = 0.0, shift upper a scale
+		double minRate = ratingScale.get(0).doubleValue();
+		double epsilon = minRate == 0.0 ? ratingScale.get(1).doubleValue() - minRate : 0;
+		if (epsilon > 0) {
+			// shift upper a scale
+			for (int i = 0, im = ratingScale.size(); i < im; i++) {
+				double val = ratingScale.get(i);
+				ratingScale.set(i, val + epsilon);
+			}
+			// update rating values
+			for (int i = 0; i < vals.size(); i++) {
+				vals.set(i, vals.get(i) + epsilon);
+			}
+		}
+
+		// get dimensions
+		int numRows = numUsers(), numCols = numItems();
+		for (int d = 0; d < numDims; d++) {
+			dims[d] = ndSets[d].size();
+		}
+
+		// debug info
+		Logs.debug("With Specs: {Users, Items, Ratings, Features} = {{}, {}, {}, {}}, Scale = {{}}", numRows, numCols,
+				numRatings, (numDims - 2), Strings.toString(ratingScale));
+
+		rateTensor = new SparseTensor(dims, ndLists, vals);
+		rateTensor.setUserDimension(cols[0]);
+		rateTensor.setItemDimension(cols[1]);
+
+		return new SparseMatrix[] { rateTensor.rateMatrix(), null };
 	}
 
 	/**
@@ -607,13 +745,6 @@ public class DataDAO {
 	}
 
 	/**
-	 * @return the time table of the data file
-	 */
-	public Table<Integer, Integer, Long> getTimestamps() {
-		return timestampTable;
-	}
-
-	/**
 	 * set the time unit of the data file
 	 */
 	public void setTimeUnit(TimeUnit timeUnit) {
@@ -632,5 +763,17 @@ public class DataDAO {
 	 */
 	public long getMaxTimestamp() {
 		return maxTimestamp;
+	}
+
+	public SparseTensor getRateTensor() {
+		return rateTensor;
+	}
+
+	public boolean isHeadline() {
+		return isHeadline;
+	}
+
+	public void setHeadline(boolean isHeadline) {
+		this.isHeadline = isHeadline;
 	}
 }

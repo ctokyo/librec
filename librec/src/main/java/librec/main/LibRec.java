@@ -22,6 +22,7 @@ import happy.coding.io.FileConfiger;
 import happy.coding.io.FileIO;
 import happy.coding.io.LineConfiger;
 import happy.coding.io.Logs;
+import happy.coding.io.Strings;
 import happy.coding.io.net.EMailer;
 import happy.coding.system.Dates;
 import happy.coding.system.Systems;
@@ -76,6 +77,7 @@ import librec.ranking.WBPR;
 import librec.ranking.WRMF;
 import librec.rating.BPMF;
 import librec.rating.BiasedMF;
+import librec.rating.CPTF;
 import librec.rating.GPLSA;
 import librec.rating.ItemKNN;
 import librec.rating.LDCC;
@@ -104,9 +106,7 @@ import com.google.common.collect.Table;
  */
 public class LibRec {
 	// version: MAJOR version (significant changes), followed by MINOR version (small changes, bug fixes)
-	protected static String version = "1.3";
-	// is only to print measurements
-	public static boolean isMeasuresOnly = false;
+	protected static String version = "1.4";
 	// output directory path
 	protected static String tempDirPath = "./Results/";
 
@@ -124,8 +124,8 @@ public class LibRec {
 	// line configer for rating data, LibRec outputs
 	protected LineConfiger ratingOptions, outputOptions;
 
-	// rating matrix
-	protected SparseMatrix rateMatrix;
+	// rating, timestamp matrix
+	protected SparseMatrix rateMatrix, timeMatrix;
 
 	/**
 	 * run the LibRec library
@@ -172,6 +172,9 @@ public class LibRec {
 		for (int i = 0; i < cols.size(); i++)
 			columns[i] = Integer.parseInt(cols.get(i));
 
+		// is first line: headline
+		rateDao.setHeadline(ratingOptions.contains("-headline"));
+
 		// rating threshold
 		binThold = ratingOptions.getFloat("-threshold");
 
@@ -179,9 +182,13 @@ public class LibRec {
 		timeUnit = TimeUnit.valueOf(ratingOptions.getString("--time-unit", "seconds").toUpperCase());
 		rateDao.setTimeUnit(timeUnit);
 
-		rateMatrix = rateDao.readData(columns, binThold);
+		SparseMatrix[] data = ratingOptions.contains("--as-tensor") ? rateDao.readTensor(columns, binThold) : rateDao
+				.readData(columns, binThold);
+		rateMatrix = data[0];
+		timeMatrix = data[1];
 
 		Recommender.rateMatrix = rateMatrix;
+		Recommender.timeMatrix = timeMatrix;
 		Recommender.rateDao = rateDao;
 		Recommender.binThold = binThold;
 	}
@@ -205,7 +212,6 @@ public class LibRec {
 		// LibRec outputs
 		outputOptions = cf.getParamOptions("output.setup");
 		if (outputOptions != null) {
-			isMeasuresOnly = outputOptions.contains("--measures-only");
 			tempDirPath = outputOptions.getString("-dir", "./Results/");
 		}
 
@@ -251,11 +257,13 @@ public class LibRec {
 		if (paramOptions.contains("-v")) {
 			// print out short version information
 			System.out.println("LibRec version " + version);
+			System.exit(0);
 		}
 
 		if (paramOptions.contains("--version")) {
 			// print out full version information
 			about();
+			System.exit(0);
 		}
 
 		if (paramOptions.contains("--dataset-spec")) {
@@ -263,7 +271,8 @@ public class LibRec {
 				// print out data set specification
 				cf = new FileConfiger(configFile);
 
-				DataDAO rateDao = new DataDAO(cf.getPath("dataset.ratings"));
+				readData();
+
 				rateDao.printSpecs();
 
 				String socialSet = cf.getPath("dataset.social");
@@ -272,7 +281,6 @@ public class LibRec {
 					socDao.printSpecs();
 				}
 			}
-
 			System.exit(0);
 		}
 
@@ -303,17 +311,17 @@ public class LibRec {
 
 					switch (paramOptions.getString("-target")) {
 					case "u":
-						data = paramOptions.contains("--by-date") ? ds.getRatioByUserDate(trainRatio,
-								rateDao.getTimestamps()) : ds.getRatioByUser(trainRatio);
+						data = paramOptions.contains("--by-date") ? ds.getRatioByUserDate(trainRatio, timeMatrix) : ds
+								.getRatioByUser(trainRatio);
 						break;
 					case "i":
-						data = paramOptions.contains("--by-date") ? ds.getRatioByItemDate(trainRatio,
-								rateDao.getTimestamps()) : ds.getRatioByItem(trainRatio);
+						data = paramOptions.contains("--by-date") ? ds.getRatioByItemDate(trainRatio, timeMatrix) : ds
+								.getRatioByItem(trainRatio);
 						break;
 					case "r":
 					default:
-						data = paramOptions.contains("--by-date") ? ds.getRatioByRatingDate(trainRatio,
-								rateDao.getTimestamps()) : ds.getRatioByRating(trainRatio);
+						data = paramOptions.contains("--by-date") ? ds.getRatioByRatingDate(trainRatio, timeMatrix)
+								: ds.getRatioByRating(trainRatio);
 						break;
 					}
 				}
@@ -329,7 +337,6 @@ public class LibRec {
 					writeMatrix(data[1], dirPath + "test.txt");
 				}
 			}
-
 			System.exit(0);
 		}
 
@@ -342,8 +349,6 @@ public class LibRec {
 		// delete old file first
 		FileIO.deleteFile(filePath);
 
-		Table<Integer, Integer, Long> timestamps = rateDao.getTimestamps();
-
 		List<String> lines = new ArrayList<>(1500);
 		for (MatrixEntry me : data) {
 			int u = me.row();
@@ -355,7 +360,7 @@ public class LibRec {
 
 			String user = rateDao.getUserId(u);
 			String item = rateDao.getItemId(j);
-			String timestamp = timestamps != null ? " " + timestamps.get(u, j) : "";
+			String timestamp = timeMatrix != null ? " " + timeMatrix.get(u, j) : "";
 
 			lines.add(user + " " + item + " " + (float) ruj + timestamp);
 
@@ -381,11 +386,7 @@ public class LibRec {
 		String setup = cf.getString("evaluation.setup");
 		LineConfiger evalOptions = new LineConfiger(setup);
 
-		// debug information
-		if (isMeasuresOnly)
-			Logs.debug("With Setup: {}", setup);
-		else
-			Logs.info("With Setup: {}", setup);
+		Logs.info("With Setup: {}", setup);
 
 		Recommender algo = null;
 
@@ -403,10 +404,10 @@ public class LibRec {
 			boolean isByDate = evalOptions.contains("--by-date");
 			switch (evalOptions.getString("-target", "r")) {
 			case "u":
-				data = ds.getLOOByUser(isByDate, rateDao.getTimestamps());
+				data = ds.getLOOByUser(isByDate, timeMatrix);
 				break;
 			case "i":
-				data = ds.getLOOByItem(isByDate, rateDao.getTimestamps());
+				data = ds.getLOOByItem(isByDate, timeMatrix);
 				break;
 			case "r":
 			default:
@@ -417,22 +418,22 @@ public class LibRec {
 		case "test-set":
 			DataDAO testDao = new DataDAO(evalOptions.getString("-f"), rateDao.getUserIds(), rateDao.getItemIds());
 			testDao.setTimeUnit(timeUnit);
-			Recommender.testDao = testDao;
 
-			SparseMatrix testMatrix = testDao.readData(columns, binThold);
-			data = new SparseMatrix[] { rateMatrix, testMatrix };
+			SparseMatrix[] testData = testDao.readData(columns, binThold);
+			data = new SparseMatrix[] { rateMatrix, testData[0] };
+			Recommender.testTimeMatrix = testData[1];
 			break;
 		case "given-n":
 			N = evalOptions.getInt("-N", 20);
 
 			switch (evalOptions.getString("-target")) {
 			case "i":
-				data = evalOptions.contains("--by-date") ? ds.getGivenNByItemDate(N, rateDao.getTimestamps()) : ds
+				data = evalOptions.contains("--by-date") ? ds.getGivenNByItemDate(N, timeMatrix) : ds
 						.getGivenNByItem(N);
 				break;
 			case "u":
 			default:
-				data = evalOptions.contains("--by-date") ? ds.getGivenNByUserDate(N, rateDao.getTimestamps()) : ds
+				data = evalOptions.contains("--by-date") ? ds.getGivenNByUserDate(N, timeMatrix) : ds
 						.getGivenNByUser(N);
 				break;
 			}
@@ -442,16 +443,16 @@ public class LibRec {
 
 			switch (evalOptions.getString("-target")) {
 			case "u":
-				data = evalOptions.contains("--by-date") ? ds.getRatioByUserDate(ratio, rateDao.getTimestamps()) : ds
+				data = evalOptions.contains("--by-date") ? ds.getRatioByUserDate(ratio, timeMatrix) : ds
 						.getRatioByUser(ratio);
 				break;
 			case "i":
-				data = evalOptions.contains("--by-date") ? ds.getRatioByItemDate(ratio, rateDao.getTimestamps()) : ds
+				data = evalOptions.contains("--by-date") ? ds.getRatioByItemDate(ratio, timeMatrix) : ds
 						.getRatioByItem(ratio);
 				break;
 			case "r":
 			default:
-				data = evalOptions.contains("--by-date") ? ds.getRatioByRatingDate(ratio, rateDao.getTimestamps()) : ds
+				data = evalOptions.contains("--by-date") ? ds.getRatioByRatingDate(ratio, timeMatrix) : ds
 						.getRatioByRating(ratio);
 				break;
 			}
@@ -594,7 +595,7 @@ public class LibRec {
 	/**
 	 * print out the evaluation information for a specific algorithm
 	 */
-	private void printEvalInfo(Recommender algo, Map<Measure, Double> ms) {
+	private void printEvalInfo(Recommender algo, Map<Measure, Double> ms) throws Exception {
 
 		String result = Recommender.getEvalInfo(ms);
 		// we add quota symbol to indicate the textual format of time 
@@ -605,6 +606,19 @@ public class LibRec {
 				(outputOptions.contains("--measures-only") ? "" : "\n"));
 
 		Logs.info(evalInfo);
+
+		// copy to clipboard for convenience, useful for a single run
+		if (outputOptions.contains("--to-clipboard")) {
+			Strings.toClipboard(evalInfo);
+			Logs.debug("Have been copied to clipboard!");
+		}
+
+		// append to a specific file, useful for multiple runs
+		if (outputOptions.contains("--to-file")) {
+			String filePath = outputOptions.getString("--to-file", tempDirPath + algorithm + ".txt");
+			FileIO.writeString(filePath, evalInfo, true);
+			Logs.debug("Have been collected to file: {}", filePath);
+		}
 	}
 
 	/**
@@ -720,6 +734,8 @@ public class LibRec {
 			return new URP(trainMatrix, testMatrix, fold);
 		case "ldcc":
 			return new LDCC(trainMatrix, testMatrix, fold);
+		case "cptf":
+			return new CPTF(trainMatrix, testMatrix, fold);
 
 			/* item ranking */
 		case "climf":

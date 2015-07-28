@@ -66,7 +66,8 @@ public class SparseMatrix implements Iterable<MatrixEntry>, Serializable {
 	/**
 	 * Construct a sparse matrix with both CRS and CCS structures
 	 */
-	public SparseMatrix(int rows, int cols, Table<Integer, Integer, Double> dataTable, Multimap<Integer, Integer> colMap) {
+	public SparseMatrix(int rows, int cols, Table<Integer, Integer, ? extends Number> dataTable,
+			Multimap<Integer, Integer> colMap) {
 		numRows = rows;
 		numColumns = cols;
 
@@ -76,7 +77,7 @@ public class SparseMatrix implements Iterable<MatrixEntry>, Serializable {
 	/**
 	 * Construct a sparse matrix with only CRS structures
 	 */
-	public SparseMatrix(int rows, int cols, Table<Integer, Integer, Double> dataTable) {
+	public SparseMatrix(int rows, int cols, Table<Integer, Integer, ? extends Number> dataTable) {
 		this(rows, cols, dataTable, null);
 	}
 
@@ -203,7 +204,8 @@ public class SparseMatrix implements Iterable<MatrixEntry>, Serializable {
 	 * @param columnStructure
 	 *            column structure
 	 */
-	private void construct(Table<Integer, Integer, Double> dataTable, Multimap<Integer, Integer> columnStructure) {
+	private void construct(Table<Integer, Integer, ? extends Number> dataTable,
+			Multimap<Integer, Integer> columnStructure) {
 		int nnz = dataTable.size();
 
 		// CRS
@@ -248,10 +250,10 @@ public class SparseMatrix implements Iterable<MatrixEntry>, Serializable {
 		}
 
 		// set data
-		for (Cell<Integer, Integer, Double> en : dataTable.cellSet()) {
+		for (Cell<Integer, Integer, ? extends Number> en : dataTable.cellSet()) {
 			int row = en.getRowKey();
 			int col = en.getColumnKey();
-			double val = en.getValue();
+			double val = en.getValue().doubleValue();
 
 			set(row, col, val);
 		}
@@ -788,7 +790,7 @@ public class SparseMatrix implements Iterable<MatrixEntry>, Serializable {
 
 		for (MatrixEntry me : this)
 			if (me.get() != 0)
-				sb.append(String.format("%d\t%d\t%f\n", new Object[] { me.row() + 1, me.column() + 1, me.get() }));
+				sb.append(String.format("%d\t%d\t%f\n", new Object[] { me.row(), me.column(), me.get() }));
 
 		return sb.toString();
 	}
